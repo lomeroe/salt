@@ -13,6 +13,7 @@ import logging
 import salt.utils
 from salt.exceptions import CommandExecutionError
 from salt.exceptions import SaltInvocationError
+import salt.utils.dictupdate as dictupdate
 from salt.ext.six import string_types
 from salt.ext.six.moves import range  # pylint: disable=redefined-builtin
 
@@ -25,7 +26,7 @@ except ImportError:
     HAS_WINDOWS_MODULES = False
 
 log = logging.getLogger(__name__)
-__virtualname__ = 'win_secpol'
+__virtualname__ = 'secpol'
 
 
 class policy_info(object):
@@ -36,11 +37,12 @@ class policy_info(object):
         self.policies = {
             'RestrictAnonymous': {
                 'Policy': 'Network Access: Do not allow anonymous enumeration of SAM accounts and shares',
-                'Settings': {'Enabled':1, 'Disabled':0},
+                'Settings': [0, 1],
                 'How': {'Registry':
                     {'Hive': 'HKEY_LOCAL_MACHINE',
-                    'Path': '\\SYSTEM\\CurrentControlSet\\Control\\Lsa',
-                    'Value': 'RestrictAnonymous'
+                    'Path': 'SYSTEM\\CurrentControlSet\\Control\\Lsa',
+                    'Value': 'RestrictAnonymous',
+                    'Type': 'REG_DWORD'
                     },
                 },
                 'Transform': {
@@ -50,7 +52,7 @@ class policy_info(object):
             },
             'PasswordHistory': {
                 'Policy': 'Enforce password history',
-                'Settings': range(25),
+                'Settings': 'True if {0} < 25 else False',
                 'How': {'NetUserModal':
                     {'Modal': 0,
                     'Option': 'password_hist_len'
@@ -59,7 +61,7 @@ class policy_info(object):
             },
             'MaxPasswordAge': {
                 'Policy': 'Maximum password age',
-                'Settings': range(1000),
+                'Settings': 'True if {0} >= 0 and {0} <= 86400000 else False',
                 'How': {'NetUserModal':
                     {'Modal': 0,
                     'Option': 'max_passwd_age',
@@ -72,7 +74,7 @@ class policy_info(object):
             },
             'MinPasswordAge': {
                 'Policy': 'Minimum password age',
-                'Settings': range(999),
+                'Settings': 'True if {0} >= 0 and {0} <= 86313600 else False',
                 'How': {'NetUserModal':
                     {'Modal': 0,
                     'Option': 'min_passwd_age',
@@ -85,7 +87,7 @@ class policy_info(object):
             },
             'MinPasswordLen': {
                 'Policy': 'Minimum password length',
-                'Settings': range(15),
+                'Settings': 'True if {0} >= 0 and {0} <= 14 else False',
                 'How': {'NetUserModal':
                     {'Modal': 0,
                     'Option': 'min_passwd_len',
@@ -94,7 +96,7 @@ class policy_info(object):
             },
             'PasswordComplexity': {
                 'Policy': 'Passwords must meet complexity requirements',
-                'Settings': {'Enabled':1, 'Disabled':0},
+                'Settings': [0, 1],
                 'How': {'Secedit':
                     {'Option':'PasswordComplexity',
                     'Section': 'System Access',
@@ -107,7 +109,7 @@ class policy_info(object):
             },
             'ClearTextPasswords': {
                 'Policy': 'Store passwords using reversible encryption',
-                'Settings': {'Enabled':1, 'Disabled':0},
+                'Settings': [0, 1],
                 'How': {'Secedit':
                     {'Option':'ClearTextPassword',
                     'Section': 'System Access',
@@ -120,7 +122,7 @@ class policy_info(object):
             },
             'AdminAccountStatus': {
                 'Policy': 'Accounts: Administrator account status',
-                'Settings': {'Enabled':1, 'Disabled':0},
+                'Settings': [0, 1],
                 'How': {'Secedit':
                     {'Option':'EnableAdminAccount',
                     'Section': 'System Access',
@@ -133,7 +135,7 @@ class policy_info(object):
             },
             'GuestAccountStatus': {
                 'Policy': 'Accounts: Guest account status',
-                'Settings': {'Enabled':1, 'Disabled':0},
+                'Settings': [0, 1],
                 'How': {'Secedit':
                     {'Option':'EnableGuestAccount',
                     'Section': 'System Access',
@@ -144,21 +146,22 @@ class policy_info(object):
                     'Put': '1 if "{0}".upper() == "Enabled".upper() else 0',
                 },
             },
-            'BlankPasswordUse': {
+            'LimitBlankPasswordUse': {
                 'Policy': 'Accounts: Limit local account use of blank passwords to console logon only',
-                'Settings': {'Enabled':1, 'Disabled':0},
+                'Settings': [0, 1],
                 'How': {'Registry':
                     {'Hive': 'HKEY_LOCAL_MACHINE',
-                    'Path': '\\SYSTEM\\CurrentControlSet\\Control\\Lsa',
-                    'Value': 'limitblankpassworduse'
+                    'Path': 'SYSTEM\\CurrentControlSet\\Control\\Lsa',
+                    'Value': 'limitblankpassworduse',
+                    'Type': 'REG_DWORD',
                     },
                 },
                 'Transform': {
                     'Get': '"Enabled" if {0} == 1 else "Disabled"',
-                    'Put': '1 if "{0}".upper() == "Enabled".upper() else 0',
+                    'Put': '1 if "{0}".upper() == "ENABLED" else (0 if "{0}".upper() == "DISABLED" else -1)',
                 },
             },
-            'RenameAdministraorAccount': {
+            'RenameAdministratorAccount': {
                 'Policy': 'Accounts: Rename administrator account',
                 'Settings': None,
                 'How': {'Secedit':
@@ -168,7 +171,7 @@ class policy_info(object):
                 },
                 'Transform': {
                     'Get': '{0}.replace(\'"\',\'\')',
-                    'Put': '"{0}"',
+                    'Put': '\'"{0}"\'.format(\'{0}\')',
                 },
             },
             'RenameGuestAccount': {
@@ -181,12 +184,58 @@ class policy_info(object):
                 },
                 'Transform': {
                     'Get': '{0}.replace(\'"\',\'\')',
-                    'Put': '"{0}"',
+                    'Put': '\'"{0}"\'.format(\'{0}\')',
+                },
+            },
+            'AuditBaseObjects': {
+                'Policy': 'Audit: Audit the access of global system objects',
+                'Settings': [0, 1],
+                'How': {'Registry':
+                    {'Hive': 'HKEY_LOCAL_MACHINE',
+                    'Path': 'SYSTEM\\CurrentControlSet\\Control\\Lsa',
+                    'Value': 'AuditBaseObjects',
+                    'Type': 'REG_DWORD',
+                    }
+                },
+                'Transform': {
+                    'Get': '"Enabled" if {0} == 1 else "Disabled"',
+                    'Put': '1 if "{0}".upper() == "ENABLED" else (0 if "{0}".upper() == "DISABLED" else -1)',
+                },
+            },
+            #apparently, reg.read_key doesn't like reg_binary?, need to investigate further...
+            #'FullPrivilegeAuditing': {
+            #    'Policy': 'Audit: Audit the use of Backup and Restore privilege',
+            #    'Settings': [0, 1],
+            #    'How': {'Registry':
+            #        {'Hive': 'HKEY_LOCAL_MACHINE',
+            #        'Path': 'SYSTEM\\CurrentControlSet\\Control\\Lsa',
+            #        'Value': 'FullPrivilegeAuditing',
+            #        'Type': 'REG_BINARY',
+            #        }
+            #    },
+            #    'Transform': {
+            #        'Get': '"Enabled" if {0} == 1 else "Disabled"',
+            #        'Put': '1 if "{0}".upper() == "ENABLED" else (0 if "{0}".upper() == "DISABLED" else -1)',
+            #    },
+            #},
+            'CrashOnAuditFail': {
+                'Policy': 'Audit: Shut down system immediately if unable to log security audits',
+                'Settings': [0, 1],
+                'How': {'Registry':
+                    {'Hive': 'HKEY_LOCAL_MACHINE',
+                    'Path': 'SYSTEM\\CurrentControlSet\\Control\\Lsa',
+                    'Value': 'CrashOnAuditFail',
+                    'Type': 'REG_DWORD',
+                    }
+                },
+                'Transform': {
+                    'Get': '"Enabled" if {0} == 1 else "Disabled"',
+                    'Put': '1 if "{0}".upper() == "ENABLED" else (0 if "{0}".upper() == "DISABLED" else -1)',
                 },
             },
             'LockoutDuration': {
                 'Policy': 'Account lockout duration',
-                'Settings': range(100000),
+                'Settings': 'True if {0} >= 0 and {0} <= 6000000 else False',
                 'How': {'NetUserModal':
                     {'Modal': 3,
                     'Option': 'lockout_duration',
@@ -199,7 +248,7 @@ class policy_info(object):
             },
             'LockoutThreshold': {
                 'Policy': 'Account lockout threshold',
-                'Settings': range(1000),
+                'Settings': 'True if {0} >= 0 and {0} <= 1000 else False',
                 'How': {'NetUserModal':
                     {'Modal': 3,
                     'Option': 'lockout_threshold',
@@ -208,7 +257,7 @@ class policy_info(object):
             },
             'LockoutWindow': {
                 'Policy': 'Reset account lockout counter after',
-                'Settings': range(100000),
+                'Settings': 'True if {0} >= 0 and {0} <= 6000000 else False',
                 'How': {'NetUserModal':
                     {'Modal': 3,
                     'Option': 'lockout_observation_window',
@@ -221,7 +270,7 @@ class policy_info(object):
             },
             'AuditLogonEvents': {
                 'Policy': 'Audit account logon events',
-                'Settings': {'Success': 1, 'Failure': 2, 'Success and Failure': 3},
+                'Settings': [0, 1, 2, 3],
                 'How': {'Secedit':
                     {'Option': 'AuditLogonEvents',
                     'Section': 'Event Audit',
@@ -229,12 +278,12 @@ class policy_info(object):
                 },
                 'Transform': {
                     'Get': '"Success" if {0} == 1 else ("Failure" if {0} == 2 else ("Success and Failure" if {0} == 3 else "No auditing"))',
-                    'Put': '',
+                    'Put': '1 if "{0}.upper()" == "SUCCESS" else (2 if "{0}".upper() == "FAILURE" else (3 if "{0}".upper() == "SUCCESS AND FAILURE" else 0))',
                 },
             },
             'AuditAccountManage': {
                 'Policy': 'Audit account management',
-                'Settings': {'Success': 1, 'Failure': 2, 'Success and Failure': 3},
+                'Settings': [0, 1, 2, 3],
                 'How': {'Secedit':
                     {'Option': 'AuditAccountManage',
                     'Section': 'Event Audit',
@@ -242,12 +291,12 @@ class policy_info(object):
                 },
                 'Transform': {
                     'Get': '"Success" if {0} == 1 else ("Failure" if {0} == 2 else ("Success and Failure" if {0} == 3 else "No auditing"))',
-                    'Put': '',
+                    'Put': '1 if "{0}.upper()" == "SUCCESS" else (2 if "{0}".upper() == "FAILURE" else (3 if "{0}".upper() == "SUCCESS AND FAILURE" else 0))',
                 },
             },
             'AuditDSAccess': {
                 'Policy': 'Audit directory service access',
-                'Settings': {'Success': 1, 'Failure': 2, 'Success and Failure': 3},
+                'Settings': [0, 1, 2, 3],
                 'How': {'Secedit':
                     {'Option': 'AuditDSAccess',
                     'Section': 'Event Audit',
@@ -255,12 +304,12 @@ class policy_info(object):
                 },
                 'Transform': {
                     'Get': '"Success" if {0} == 1 else ("Failure" if {0} == 2 else ("Success and Failure" if {0} == 3 else "No auditing"))',
-                    'Put': '',
+                    'Put': '1 if "{0}.upper()" == "SUCCESS" else (2 if "{0}".upper() == "FAILURE" else (3 if "{0}".upper() == "SUCCESS AND FAILURE" else 0))',
                 },
             },
             'AuditLogonEvents': {
                 'Policy': 'Audit logon events',
-                'Settings': {'Success': 1, 'Failure': 2, 'Success and Failure': 3},
+                'Settings': [0, 1, 2, 3],
                 'How': {'Secedit':
                     {'Option': 'AuditLogonEvents',
                     'Section': 'Event Audit',
@@ -268,12 +317,12 @@ class policy_info(object):
                 },
                 'Transform': {
                     'Get': '"Success" if {0} == 1 else ("Failure" if {0} == 2 else ("Success and Failure" if {0} == 3 else "No auditing"))',
-                    'Put': '',
+                    'Put': '1 if "{0}.upper()" == "SUCCESS" else (2 if "{0}".upper() == "FAILURE" else (3 if "{0}".upper() == "SUCCESS AND FAILURE" else 0))',
                 },
             },
             'AuditObjectAccess': {
                 'Policy': 'Audit object access',
-                'Settings': {'Success': 1, 'Failure': 2, 'Success and Failure': 3},
+                'Settings': [0, 1, 2, 3],
                 'How': {'Secedit':
                     {'Option': 'AuditObjectAccess',
                     'Section': 'Event Audit',
@@ -281,12 +330,12 @@ class policy_info(object):
                 },
                 'Transform': {
                     'Get': '"Success" if {0} == 1 else ("Failure" if {0} == 2 else ("Success and Failure" if {0} == 3 else "No auditing"))',
-                    'Put': '',
+                    'Put': '1 if "{0}.upper()" == "SUCCESS" else (2 if "{0}".upper() == "FAILURE" else (3 if "{0}".upper() == "SUCCESS AND FAILURE" else 0))',
                 },
             },
             'AuditPolicyChange': {
                 'Policy': 'Audit policy change',
-                'Settings': {'Success': 1, 'Failure': 2, 'Success and Failure': 3},
+                'Settings': [0, 1, 2, 3],
                 'How': {'Secedit':
                     {'Option':'AuditPolicyChange',
                     'Section': 'Event Audit',
@@ -294,12 +343,12 @@ class policy_info(object):
                 },
                 'Transform': {
                     'Get': '"Success" if {0} == 1 else ("Failure" if {0} == 2 else ("Success and Failure" if {0} == 3 else "No auditing"))',
-                    'Put': '',
+                    'Put': '1 if "{0}.upper()" == "SUCCESS" else (2 if "{0}".upper() == "FAILURE" else (3 if "{0}".upper() == "SUCCESS AND FAILURE" else 0))',
                 },
             },
             'AuditPrivilegeUse': {
                 'Policy': 'Audit privilege use',
-                'Settings': {'Success': 1, 'Failure': 2, 'Success and Failure': 3},
+                'Settings': [0, 1, 2, 3],
                 'How': {'Secedit':
                     {'Option':'AuditPrivilegeUse',
                     'Section': 'Event Audit',
@@ -307,12 +356,12 @@ class policy_info(object):
                 },
                 'Transform': {
                     'Get': '"Success" if {0} == 1 else ("Failure" if {0} == 2 else ("Success and Failure" if {0} == 3 else "No auditing"))',
-                    'Put': '',
+                    'Put': '1 if "{0}.upper()" == "SUCCESS" else (2 if "{0}".upper() == "FAILURE" else (3 if "{0}".upper() == "SUCCESS AND FAILURE" else 0))',
                 },
             },
             'AuditProcessTracking': {
                 'Policy': 'Audit process tracking',
-                'Settings': {'Success': 1, 'Failure': 2, 'Success and Failure': 3},
+                'Settings': [0, 1, 2, 3],
                 'How': {'Secedit':
                     {'Option':'AuditProcessTracking',
                     'Section': 'Event Audit',
@@ -320,12 +369,12 @@ class policy_info(object):
                 },
                 'Transform': {
                     'Get': '"Success" if {0} == 1 else ("Failure" if {0} == 2 else ("Success and Failure" if {0} == 3 else "No auditing"))',
-                    'Put': '',
+                    'Put': '1 if "{0}.upper()" == "SUCCESS" else (2 if "{0}".upper() == "FAILURE" else (3 if "{0}".upper() == "SUCCESS AND FAILURE" else 0))',
                 },
             },
             'AuditSystemEvents': {
                 'Policy': 'Audit system events',
-                'Settings': {'Success': 1, 'Failure': 2, 'Success and Failure': 3},
+                'Settings': [0, 1, 2, 3],
                 'How': {'Secedit':
                     {'Option':'AuditSystemEvents',
                     'Section': 'Event Audit',
@@ -333,9 +382,10 @@ class policy_info(object):
                 },
                 'Transform': {
                     'Get': '"Success" if {0} == 1 else ("Failure" if {0} == 2 else ("Success and Failure" if {0} == 3 else "No auditing"))',
-                    'Put': '',
+                    'Put': '1 if "{0}.upper()" == "SUCCESS" else (2 if "{0}".upper() == "FAILURE" else (3 if "{0}".upper() == "SUCCESS AND FAILURE" else 0))',
                 },
             },
+            
         }
 
 
@@ -630,6 +680,7 @@ def get(policy_names=None, return_full_policy_names=False):
         if _pol:
             if _pol['How'].has_key('Registry'):
                 #get value from registry
+                #TODO: what if the value doesn't exist?  do we need a "default" in the policy_info?
                 vals[policy_name] = __salt__['reg.read_key'](_pol['How']['Registry']['Hive'], _pol['How']['Registry']['Path'], _pol['How']['Registry']['Value'])
             elif _pol['How'].has_key('Secedit'):
                 #get value from secedit
@@ -654,14 +705,89 @@ def get(policy_names=None, return_full_policy_names=False):
     return vals
 
 
-def set(policy_names, policy_values):
+def set(**kwargs):
     '''
     Set a local server policy
 
-    policy_name
-        the policy name to set (see policies class)
-
-    policy_value
-        the value to set for the policy
+    kwargs:
+        list of policy=value to set
     '''
-    pass
+    if kwargs:
+        _secedits = {}
+        _modal_sets = {}
+        
+        _policydata = policy_info()
+        log.debug('KWARGS keys = {0}'.format(kwargs.keys()))
+        for policy_name in kwargs.keys():
+            if not policy_name.startswith('__pub_'):
+                _pol = None
+                if _policydata.policies.has_key(policy_name):
+                    _pol = _policydata.policies[policy_name]
+                else:
+                    for p in _policydata.policies.keys():
+                        if _policydata.policies[p]['Policy'].upper() == policy_name.upper():
+                            _pol = _policydata.policies[p]
+                            policy_name = p
+                if _pol:
+                    #transform and validate the setting
+                    _value = _transformValue(kwargs[policy_name], _policydata.policies[policy_name], 'Put')
+                    if _pol.has_key('Settings'):
+                        log.debug('we have settings key')
+                        if _pol['Settings']:
+                            log.debug('we have settings to validate against')
+                            if isinstance(_pol['Settings'], list):
+                                if not _value in _pol['Settings']:
+                                    msg = 'The specified value {0} is not an acceptable setting for policy {1}.'.format(kwargs[policy_name], policy_name)
+                                    raise SaltInvocationError(msg)
+                            elif isinstance(_pol['Settings'], string_types):
+                                if not eval(_pol['Settings'].format(_value)):
+                                    msg = 'The specified value {0} is not an acceptable setting for policy {1}.'.format(kwargs[policy_name], policy_name)
+                                    raise SaltInvocationError(msg)
+                    if _pol['How'].has_key('Registry'):
+                        #set value in registry
+                        log.debug('{0} is a Registry policy'.format(policy_name))
+                        _ret = __salt__['reg.set_key'](_pol['How']['Registry']['Hive'], _pol['How']['Registry']['Path'], _pol['How']['Registry']['Value'], _value, _pol['How']['Registry']['Type'])
+                        if not _ret:
+                            msg = 'Error while attempting to set policy {0} via the registry.  Some changes may not be applied as expected.'.format(policy_name)
+                            raise CommandExecutionError(msg)
+                    elif _pol['How'].has_key('Secedit'):
+                        #set value with secedit
+                        log.debug('{0} is a Secedit policy'.format(policy_name))
+                        if not _secedits.has_key(_pol['How']['Secedit']['Section']):
+                            _secedits[_pol['How']['Secedit']['Section']] = []
+                        _secedits[_pol['How']['Secedit']['Section']].append(' '.join([_pol['How']['Secedit']['Option'], '=', str(_value)]))
+                    elif _pol['How'].has_key('NetUserModal'):
+                        #set value via NetUserModal
+                        log.debug('{0} is a NetUserModal policy'.format(policy_name))
+                        if not _modal_sets.has_key(_pol['How']['NetUserModal']['Modal']):
+                            _modal_sets[_pol['How']['NetUserModal']['Modal']] = {}
+                        _modal_sets[_pol['How']['NetUserModal']['Modal']][_pol['How']['NetUserModal']['Option']] = _value
+                else:
+                    msg = 'The specified policy {0} is not currently available to be configured via this module'.format(policy_name)
+                    raise SaltInvocationError(msg)
+        if _secedits:
+            #we've got secedits to make
+            log.debug(_secedits)
+            _iniData = '\r\n'.join(['[Unicode]','Unicode=yes'])
+            _seceditSections = ['System Access', 'Event Audit', 'Registry Values', 'Privilege Rights']
+            for _seceditSection in _seceditSections:
+                if _secedits.has_key(_seceditSection):
+                    _iniData = '\r\n'.join([_iniData, ''.join(['[', _seceditSection, ']']), '\r\n'.join(_secedits[_seceditSection])])
+            _iniData = '\r\n'.join([_iniData, '[Version]', 'signature="$CHICAGO$"', 'Revision=1'])
+            log.debug('_iniData == {0}'.format(_iniData))
+            _ret = _importSeceditConfig(_iniData)
+            if not _ret:
+                msg = 'Error while attempting to set policies via secedit.  Some changes may not be applied as expected.'
+                raise CommandExecutionError(msg)
+        if _modal_sets:
+            #we've got modalsets to make
+            log.debug(_modal_sets)
+            for _modal_set in _modal_sets.keys():
+                _existingModalData = win32net.NetUserModalsGet(None, _modal_set)
+                _newModalSetData = dictupdate.update(_existingModalData, _modal_sets[_modal_set])
+                log.debug('NEW MODAL SET = {0}'.format(_newModalSetData))
+                _ret = win32net.NetUserModalsSet(None, _modal_set, _newModalSetData)
+        return True
+    else:
+        msg = 'You have to specify something!'
+        raise SaltInvocationError(msg)

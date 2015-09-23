@@ -824,7 +824,9 @@ class policy_info(object):
         '''
         converts a list of pysid objects to string representations
         '''
-        sids = []
+        if isinstance(val, string_types):
+            val = val.split(',')
+        usernames = []
         for _sid in val:
             try:
                 userSid = win32security.LookupAccountSid('', _sid)
@@ -834,8 +836,30 @@ class policy_info(object):
                     userSid = '{0}'.format(userSid[0])
             except Exception:
                 userSid = win32security.ConvertSidToStringSid(_sid)
-            sids.append(userSid)
+            usernames.append(userSid)
+        return usernames
+
+
+    def _usernamesToSidObjects(self, val, **kwargs):
+        '''
+        converts a list of usernames to sid objects
+        '''
+        if not val:
+            return val
+
+        if isinstance(val, string_types):
+            val = val.split(',')
+        sids = []
+        for _user in val:
+            try:
+                sid = win32security.LookupAccountName('', _user)[0]
+                sids.append(sid)
+            except Exception as e:
+                raise CommandExecutionError((
+                    'There was an error obtaining the SID of user "{0}".  Error returned: {1}'
+                    ).format(_user, e))
         return sids
+
 
 def __virtual__():
     '''
@@ -934,12 +958,33 @@ def _validateSetting(value, policy):
         return True
 
 
-def _addAccountRights():
-    h = win32security.LsaOpenPolicy(None, win32security.POLICY_ALL_ACCESS)
-    #get all the SIDs that have a certain right
-    _sids = win32security.LsaEnumerateAccountsWithUserRight(h, userRight)
-    _ret = win32security.LsaAddAccountRights(h, sidObject, userRightsList)
-    _ret = win32security.LsaRemoveAccountRights(h, sidObject, False, userRightsList)
+def _addAccountRights(sidObject, userRight):
+    '''
+    helper function to add an account right to a user
+    '''
+    try:
+        if sidObject:
+            _polHandle = win32security.LsaOpenPolicy(None, win32security.POLICY_ALL_ACCESS)
+            userRightsList = [userRight]
+            _ret = win32security.LsaAddAccountRights(_polHandle, sidObject, userRightsList)
+        return True
+    except Exception as e:
+        log.error('Error attempting to add account right, exception was {0}'.format(e))
+        return False
+
+
+def _delAccountRights(sidObject, userRight):
+    '''
+    helper function to remove an account right from a user
+    '''
+    try:
+        _polHandle = win32security.LsaOpenPolicy(None, win32security.POLICY_ALL_ACCESS)
+        userRightsList = [userRight]
+        _ret = win32security.LsaRemoveAccountRights(_polHandle, sidObject, False, userRightsList)
+        return True
+    except Exception as e:
+        log.error('Error attempting to delete account right, exception was {0}'.format(e))
+        return False
 
 
 def _getRightsAssignments(userRight):
@@ -1024,9 +1069,13 @@ def get(policy_names=None, return_full_policy_names=False):
     return vals
 
 
-def set(**kwargs):
+def set(cumulative_rights_assignments=True, **kwargs):
     '''
     Set a local server policy
+
+    :param boolean cumulative_rights_assignments:
+        If True, user right assignment specifications are simply added to the existing policy
+        If False, only the users specified will get the right (any existing will have the right revoked
 
     :param str kwargs:
         policyname=value kwargs for all the policies you want to set
@@ -1082,6 +1131,22 @@ def set(**kwargs):
                         if not _modal_sets.has_key(_pol['How']['NetUserModal']['Modal']):
                             _modal_sets[_pol['How']['NetUserModal']['Modal']] = {}
                         _modal_sets[_pol['How']['NetUserModal']['Modal']][_pol['How']['NetUserModal']['Option']] = _value
+                    elif _pol['How'].has_key('LsaRights'):
+                        _existingUsers = None
+                        if not cumulative_rights_assignments:
+                            _existingUsers = _getRightsAssignments(_pol['How']['LsaRights']['Option'])
+                        if _value:
+                            for _u in _value:
+                                _ret = _addAccountRights(_u, _pol['How']['LsaRights']['Option'])
+                                if not _ret:
+                                    msg = 'An error occurred attempting to configure the user right {0}.'.format(policy_name)
+                                    raise SaltInvocationError(msg)
+                        if _existingUsers:
+                            for _u in _existingUsers:
+                                _ret = _delAccountRights(_u, _pol['How']['LsaRights']['Option'])
+                                if not _ret:
+                                    msg = 'An error occurred attempting to remove previously configured users with right {0}.'.format(policy_name)
+                                    raise SaltInvocationError(msg)
                 else:
                     msg = 'The specified policy {0} is not currently available to be configured via this module'.format(policy_name)
                     raise SaltInvocationError(msg)

@@ -327,37 +327,36 @@ def eni_present(
                 ret['result'] = False
                 ret['comment'] = ' '.join([ret['comment'], 'Failed to allocate an EIP address'])
                 return ret
-    for arecord in arecords:
-        _ret = None
-        dns_provider = 'boto_route53'
-        arecord['record_type'] = 'A'
-        public_ip_arecord = False
-        if 'public' in arecord:
-            public_ip_arecord = arecord.pop('public')
-        if public_ip_arecord:
-            arecord['value'] = r['result']['publicIp']
-        else:
-            arecord['value'] = r['result']['private_ip_address']
-        if 'provider' in arecord:
-            dns_provider = arecord.pop('provider')
-        if dns_provider == 'boto_route53':
-            if 'profile' not in arecord:
-                arecord['profile'] = profile
-            if 'key' not in arecord:
-                arecord['key'] = key
-            if 'keyid' not in arecord:
-                arecord['keyid'] = keyid
-            if 'region' not in arecord:
-                arecord['region'] = region
-            if 'wait_for_sync' not in arecord:
-                arecord['wait_for_sync'] = wait_for_sync
-        _ret = __states__['.'.join([dns_provider, 'present'])](**arecord)
-        ret['changes'] = dictupdate.update(ret['changes'], _ret['changes'])
-        ret['comment'] = ' '.join([ret['comment'], _ret['comment']])
-        if not _ret['result']:
-            ret['result'] = _ret['result']
-            if ret['result'] is False:
-                return ret
+    if arecords:
+        for arecord in arecords:
+            _ret = None
+            dns_provider = 'boto_route53'
+            arecord['record_type'] = 'A'
+            public_ip_arecord = False
+            if 'public' in arecord:
+                public_ip_arecord = arecord.pop('public')
+            if public_ip_arecord:
+                arecord['value'] = r['result']['publicIp']
+            else:
+                arecord['value'] = r['result']['private_ip_address']
+            if 'provider' in arecord:
+                dns_provider = arecord.pop('provider')
+            if dns_provider == 'boto_route53':
+                if 'profile' not in arecord:
+                    arecord['profile'] = profile
+                if 'key' not in arecord:
+                    arecord['key'] = key
+                if 'keyid' not in arecord:
+                    arecord['keyid'] = keyid
+                if 'region' not in arecord:
+                    arecord['region'] = region
+            _ret = __states__['.'.join([dns_provider, 'present'])](**arecord)
+            ret['changes'] = dictupdate.update(ret['changes'], _ret['changes'])
+            ret['comment'] = ' '.join([ret['comment'], _ret['comment']])
+            if not _ret['result']:
+                ret['result'] = _ret['result']
+                if ret['result'] is False:
+                    return ret
     return ret
 
 

@@ -215,11 +215,11 @@ def eni_present(
         that contains a dict with region, key and keyid.
 
     allocate_eip
-        ::versionadded Boron
+        .. versionadded:: Boron
         True/False - allocate and associate an EIP to the ENI
 
     arecords
-        ::versionadded Boron
+        .. versionadded:: Boron
         A list of arecord dicts with attributes needed for the DNS add_record state.
         By default the boto_route53.add_record state will be used, which requires: name, zone, ttl, and identifier.
         See the boto_route53 state for information about these attributes.
@@ -331,7 +331,10 @@ def eni_present(
         _ret = None
         dns_provider = 'boto_route53'
         arecord['record_type'] = 'A'
+        public_ip_arecord = False
         if 'public' in arecord:
+            public_ip_arecord = arecord.pop('public')
+        if public_ip_arecord:
             arecord['value'] = r['result']['publicIp']
         else:
             arecord['value'] = r['result']['private_ip_address']

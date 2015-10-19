@@ -172,7 +172,9 @@ def eni_present(
         region=None,
         key=None,
         keyid=None,
-        profile=None):
+        profile=None,
+        allocate_eip=False,
+        arecords=None):
     '''
     Ensure the EC2 ENI exists.
 
@@ -211,6 +213,18 @@ def eni_present(
     profile
         A dict with region, key and keyid, or a pillar key (string)
         that contains a dict with region, key and keyid.
+
+    allocate_eip
+        ::versionadded boron
+        True/False - allocate and associate an EIP to the ENI
+
+    arecords
+        ::versionadded boron
+        A list of arecord dicts with attributes needed for the DNS add_record state.
+        By default the boto_route53.add_record state will be used, which requires: name, zone, ttl, and identifier.
+        See the boto_route53 state for information about these attributes.
+        Other DNS modules can be called by specifying the provider keyword.
+        By default, the private ENI IP address will be used, set 'public: True' to use the ENI's public IP address
     '''
     if not subnet_id:
         raise SaltInvocationError('subnet_id is a required argument.')
@@ -278,6 +292,69 @@ def eni_present(
     ret['comment'] = ' '.join([ret['comment'], _ret['comment']])
     if not _ret['result']:
         ret['result'] = _ret['result']
+        return ret
+    if allocate_eip:
+        if 'allocationId' not in r['result']: 
+            eip_alloc = __salt__['boto_ec2.allocate_eip_address'](domain=None,
+                                                                region=region,
+                                                                key=key,
+                                                                keyid=keyid,
+                                                                profile=profile)
+            if eip_alloc:
+                _ret = __salt__['boto_ec2.associate_eip_address'](instance_id=None,
+                                                                  instance_name=None,
+                                                                  public_ip=None,
+                                                                  allocation_id=eip_alloc['allocation_id'],
+                                                                  network_interface_id=r['result']['id'],
+                                                                  private_ip_address=None,
+                                                                  allow_reassociation=False,
+                                                                  region=region,
+                                                                  key=key,
+                                                                  keyid=keyid,
+                                                                  profile=profile)
+                if not _ret:
+                    _ret = __salt__['boto_ec2.release_eip_address'](public_ip=None,
+                                                                    allocation_id=eip_alloc['allocation_id'],
+                                                                    region=region,
+                                                                    key=key,
+                                                                    keyid=keyid,
+                                                                    profile=profile)
+                    ret['result'] = False
+                    msg = 'Failed to assocaite the allocated EIP address with the ENI.  The EIP {0}'.format('was successfully released.' if _ret else 'was NOT RELEASED.')
+                    ret['comment'] = ' '.join([ret['comment'], msg])
+                    return ret
+            else:
+                ret['result'] = False
+                ret['comment'] = ' '.join([ret['comment'], 'Failed to allocate an EIP address'])
+                return ret
+    for arecord in arecords:
+        _ret = None
+        dns_provider = 'boto_route53'
+        arecord['record_type'] = 'A'
+        if 'public' in arecord:
+            arecord['value'] = r['result']['publicIp']
+        else:
+            arecord['value'] = r['result']['private_ip_address']
+        if 'provider' in arecord:
+            dns_provider = arecord.pop('provider')
+        if dns_provider == 'boto_route53':
+            if 'profile' not in arecord:
+                arecord['profile'] = profile
+            if 'key' not in arecord:
+                arecord['key'] = key
+            if 'keyid' not in arecord:
+                arecord['keyid'] = keyid
+            if 'region' not in arecord:
+                arecord['region'] = region
+            if 'wait_for_sync' not in arecord:
+                arecord['wait_for_sync'] = wait_for_sync
+        _ret = __states__['.'.join([dns_provider, 'present'])](**arecord)
+        ret['changes'] = dictupdate.update(ret['changes'], _ret['changes'])
+        ret['comment'] = ' '.join([ret['comment'], _ret['comment']])
+        if not _ret['result']:
+            ret['result'] = _ret['result']
+            if ret['result'] is False:
+                return ret
     return ret
 
 

@@ -256,6 +256,7 @@ def present(
         alarms_from_pillar="boto_elb_alarms",
         policies=None,
         policies_from_pillar="boto_elb_policies",
+        subnet_names=None,
         region=None,
         key=None,
         keyid=None,
@@ -315,6 +316,9 @@ def present(
         name of pillar dict that contains alarm settings.   Alarms defined for this specific
         state will override those from pillar.
 
+    subnet_names:
+        a list of subnet names to attach to the ELB, if subnets is not specified
+
     region
         Region to connect to.
 
@@ -343,7 +347,25 @@ def present(
         attributes = tmp
 
     ret = {'name': name, 'result': True, 'comment': '', 'changes': {}}
-    _ret = _elb_present(name, availability_zones, listeners, subnets,
+
+    _subnets = []
+    if subnets:
+        _subnets = subnets
+    elif subnet_names:
+        _subnets = []
+        for subnet in subnet_names:
+            s = __salt__['boto_vpc.describe_subnet'](subnet_name=subnet, region=region, key=key, keyid=keyid, profile=profile)
+            if 'subnet' in s:
+                if 'id' in s['subnet']:
+                    _subnets.append(s['subnet']['id'])
+                else:
+                    msg = 'No subnet ID could be assocated with subnet name {0}'.format(subnet)
+                    raise SaltInvocationError(msg)
+            else:
+                msg = 'Unable to find subnet {0}'.format(subnet)
+                raise SaltInvocationError(msg)
+
+    _ret = _elb_present(name, availability_zones, listeners, _subnets,
                         security_groups, scheme, region, key, keyid, profile)
     ret['changes'] = _ret['changes']
     ret['comment'] = ' '.join([ret['comment'], _ret['comment']])
